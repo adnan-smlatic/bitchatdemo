@@ -18,7 +18,7 @@ You can see actual prompts in AI_USAGE.md but it contains swearing.
 ```bash
 createdb chatdemo
 bun install
-bun run db:migrate
+bun run db:migrate    # if this fails, run: bun run db:generate first
 bun run db:seed
 bun run build
 bun start

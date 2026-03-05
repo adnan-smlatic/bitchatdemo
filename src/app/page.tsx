@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { User, PenLine, MessageSquare, ExternalLink } from 'lucide-react';
 
 export default function Home() {
@@ -18,7 +19,7 @@ export default function Home() {
 				</div>
 
 				<div className="mt-10 flex flex-col gap-3">
-					<a
+					<Link
 						href="/visitor"
 						target="_blank"
 						rel="noopener noreferrer"
@@ -34,9 +35,9 @@ export default function Home() {
 							</div>
 						</div>
 						<ExternalLink className="h-3.5 w-3.5 text-neutral-300 transition-colors group-hover:text-blue-400 dark:text-neutral-600" />
-					</a>
+					</Link>
 
-					<a
+					<Link
 						href="/agent"
 						target="_blank"
 						rel="noopener noreferrer"
@@ -52,7 +53,7 @@ export default function Home() {
 							</div>
 						</div>
 						<ExternalLink className="h-3.5 w-3.5 text-neutral-300 transition-colors group-hover:text-emerald-400 dark:text-neutral-600" />
-					</a>
+					</Link>
 				</div>
 
 				<p className="mt-8 text-center text-[11px] text-neutral-400 dark:text-neutral-600">
