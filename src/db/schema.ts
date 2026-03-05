@@ -1,4 +1,4 @@
-import { jsonb, pgTable, text, boolean, timestamp } from 'drizzle-orm/pg-core';
+import { jsonb, pgTable, text, boolean, timestamp, index } from 'drizzle-orm/pg-core';
 import type { MessageMetadata, ThreadResolution } from '@/types';
 
 export const threads = pgTable('threads', {
@@ -11,7 +11,9 @@ export const threads = pgTable('threads', {
 	resolution: jsonb('resolution').$type<ThreadResolution>(),
 	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 	updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => [
+	index('threads_updated_at_idx').on(table.updatedAt),
+]);
 
 export const messages = pgTable('messages', {
 	id: text('id').primaryKey(),
@@ -30,7 +32,11 @@ export const messages = pgTable('messages', {
 		.default('sent'),
 	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 	readAt: timestamp('read_at', { withTimezone: true }),
-});
+}, (table) => [
+	index('messages_thread_id_idx').on(table.threadId),
+	index('messages_thread_id_created_at_idx').on(table.threadId, table.createdAt),
+	index('messages_unread_idx').on(table.threadId, table.senderType, table.readAt),
+]);
 
 export const participants = pgTable('participants', {
 	id: text('id').primaryKey(),

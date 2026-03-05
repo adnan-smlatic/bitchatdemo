@@ -1,4 +1,4 @@
-import { desc, eq, lt, and, isNull, count } from 'drizzle-orm';
+import { desc, eq, lt, and, isNull, sql } from 'drizzle-orm';
 import { db } from './index';
 import { threads, messages, participants } from './schema';
 import type {
@@ -8,6 +8,7 @@ import type {
 	PaginatedMessages,
 	Participant,
 	MessageMetadata,
+	ThreadResolution,
 } from '@/types';
 import { MESSAGES_PAGE_SIZE } from '@/shared/lib/constants';
 
@@ -49,40 +50,81 @@ function serializeParticipant(row: typeof participants.$inferSelect): Participan
 }
 
 export async function getThreadsWithLastMessage(): Promise<ThreadWithLastMessage[]> {
-	const allThreads = await db
-		.select()
-		.from(threads)
-		.orderBy(desc(threads.updatedAt));
+	const rows = await db.execute<{
+		id: string;
+		visitor_id: string;
+		visitor_name: string;
+		status: 'open' | 'resolved' | 'closed';
+		resolution: ThreadResolution | null;
+		created_at: string;
+		updated_at: string;
+		last_msg_id: string | null;
+		last_msg_thread_id: string | null;
+		last_msg_sender_type: 'visitor' | 'agent' | 'system' | null;
+		last_msg_sender_id: string | null;
+		last_msg_content: string | null;
+		last_msg_message_type: 'text' | 'image' | 'file' | 'system' | null;
+		last_msg_metadata: MessageMetadata | null;
+		last_msg_status: 'sending' | 'sent' | 'delivered' | 'failed' | null;
+		last_msg_created_at: string | null;
+		last_msg_read_at: string | null;
+		unread_count: number;
+	}>(sql`
+		SELECT
+			t.*,
+			lm.id          AS last_msg_id,
+			lm.thread_id   AS last_msg_thread_id,
+			lm.sender_type AS last_msg_sender_type,
+			lm.sender_id   AS last_msg_sender_id,
+			lm.content     AS last_msg_content,
+			lm.message_type AS last_msg_message_type,
+			lm.metadata    AS last_msg_metadata,
+			lm.status      AS last_msg_status,
+			lm.created_at  AS last_msg_created_at,
+			lm.read_at     AS last_msg_read_at,
+			COALESCE(uc.cnt, 0)::int AS unread_count
+		FROM threads t
+		LEFT JOIN LATERAL (
+			SELECT * FROM messages m
+			WHERE m.thread_id = t.id
+			ORDER BY m.created_at DESC
+			LIMIT 1
+		) lm ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::int AS cnt FROM messages m
+			WHERE m.thread_id = t.id
+				AND m.sender_type = 'visitor'
+				AND m.read_at IS NULL
+		) uc ON true
+		ORDER BY t.updated_at DESC
+	`);
 
-	const result: ThreadWithLastMessage[] = [];
-
-	for (const thread of allThreads) {
-		const [lastMsg] = await db
-			.select()
-			.from(messages)
-			.where(eq(messages.threadId, thread.id))
-			.orderBy(desc(messages.createdAt))
-			.limit(1);
-
-		const [unreadResult] = await db
-			.select({ value: count() })
-			.from(messages)
-			.where(
-				and(
-					eq(messages.threadId, thread.id),
-					eq(messages.senderType, 'visitor'),
-					isNull(messages.readAt)
-				)
-			);
-
-		result.push({
-			...serializeThread(thread),
-			lastMessage: lastMsg ? serializeMessage(lastMsg) : null,
-			unreadCount: unreadResult?.value ?? 0,
-		});
-	}
-
-	return result;
+	return rows.map((row) => ({
+		id: row.id,
+		visitorId: row.visitor_id,
+		visitorName: row.visitor_name,
+		status: row.status,
+		resolution: row.resolution ?? null,
+		createdAt: new Date(row.created_at).toISOString(),
+		updatedAt: new Date(row.updated_at).toISOString(),
+		lastMessage: row.last_msg_id
+			? {
+					id: row.last_msg_id,
+					threadId: row.last_msg_thread_id!,
+					senderType: row.last_msg_sender_type!,
+					senderId: row.last_msg_sender_id!,
+					content: row.last_msg_content!,
+					messageType: row.last_msg_message_type!,
+					metadata: row.last_msg_metadata ?? null,
+					status: row.last_msg_status!,
+					createdAt: new Date(row.last_msg_created_at!).toISOString(),
+					readAt: row.last_msg_read_at
+						? new Date(row.last_msg_read_at).toISOString()
+						: null,
+				}
+			: null,
+		unreadCount: row.unread_count,
+	}));
 }
 
 export async function getThreadById(id: string): Promise<Thread | null> {
@@ -119,18 +161,17 @@ export async function getMessagesPaginated(
 	cursor?: string,
 	limit: number = MESSAGES_PAGE_SIZE
 ): Promise<PaginatedMessages> {
-	let cursorDate: Date | undefined;
-
-	if (cursor) {
-		const [cursorMsg] = await db
-			.select({ createdAt: messages.createdAt })
-			.from(messages)
-			.where(eq(messages.id, cursor));
-		cursorDate = cursorMsg?.createdAt;
-	}
-
-	const conditions = cursorDate
-		? and(eq(messages.threadId, threadId), lt(messages.createdAt, cursorDate))
+	const conditions = cursor
+		? and(
+				eq(messages.threadId, threadId),
+				lt(
+					messages.createdAt,
+					db
+						.select({ createdAt: messages.createdAt })
+						.from(messages)
+						.where(eq(messages.id, cursor))
+				)
+			)
 		: eq(messages.threadId, threadId);
 
 	const rows = await db
@@ -159,36 +200,33 @@ export async function createMessage(
 	messageType: 'text' | 'image' | 'file' | 'system' = 'text',
 	metadata?: MessageMetadata
 ): Promise<Message> {
-	const [message] = await db
-		.insert(messages)
-		.values({ id, threadId, senderType, senderId, content, messageType, metadata })
-		.returning();
+	return db.transaction(async (tx) => {
+		const [message] = await tx
+			.insert(messages)
+			.values({ id, threadId, senderType, senderId, content, messageType, metadata })
+			.returning();
 
-	await db
-		.update(threads)
-		.set({ updatedAt: new Date() })
-		.where(eq(threads.id, threadId));
+		await tx
+			.update(threads)
+			.set({ updatedAt: new Date() })
+			.where(eq(threads.id, threadId));
 
-	return serializeMessage(message);
+		return serializeMessage(message);
+	});
 }
 
 export async function markMessagesAsRead(
 	threadId: string,
 	senderType: 'visitor' | 'agent'
 ): Promise<number> {
-	const result = await db
-		.update(messages)
-		.set({ readAt: new Date() })
-		.where(
-			and(
-				eq(messages.threadId, threadId),
-				eq(messages.senderType, senderType),
-				isNull(messages.readAt)
-			)
-		)
-		.returning({ id: messages.id });
-
-	return result.length;
+	const result = await db.execute<{ count: number }>(sql`
+		UPDATE messages
+		SET read_at = NOW()
+		WHERE thread_id = ${threadId}
+			AND sender_type = ${senderType}
+			AND read_at IS NULL
+	`);
+	return result.count;
 }
 
 export async function updateMessageStatus(
@@ -208,23 +246,13 @@ export async function getOrCreateParticipant(
 	type: 'visitor' | 'agent',
 	name: string
 ): Promise<Participant> {
-	const [existing] = await db
-		.select()
-		.from(participants)
-		.where(eq(participants.id, id));
-
-	if (existing) {
-		const [updated] = await db
-			.update(participants)
-			.set({ isOnline: true, lastSeen: new Date() })
-			.where(eq(participants.id, id))
-			.returning();
-		return serializeParticipant(updated);
-	}
-
-	const [created] = await db
+	const [result] = await db
 		.insert(participants)
-		.values({ id, type, name, isOnline: true })
+		.values({ id, type, name, isOnline: true, lastSeen: new Date() })
+		.onConflictDoUpdate({
+			target: participants.id,
+			set: { isOnline: true, lastSeen: new Date() },
+		})
 		.returning();
-	return serializeParticipant(created);
+	return serializeParticipant(result);
 }
