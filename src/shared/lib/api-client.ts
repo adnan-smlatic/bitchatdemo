@@ -1,3 +1,5 @@
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+
 interface ApiError {
 	message: string;
 	status: number;
@@ -13,7 +15,7 @@ async function request<T>(
 	options?: RequestInit
 ): Promise<ApiResponse<T>> {
 	try {
-		const response = await fetch(url, {
+		const response = await fetch(`${basePath}${url}`, {
 			...options,
 			headers: {
 				'Content-Type': 'application/json',

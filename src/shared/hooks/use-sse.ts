@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+
 interface SSEOptions {
 	url: string;
 	onEvent: (event: string, data: unknown) => void;
@@ -16,7 +18,7 @@ export function useSSE({ url, onEvent, enabled = true }: SSEOptions) {
 	const connect = useCallback(() => {
 		if (!enabled) return;
 
-		const es = new EventSource(url);
+		const es = new EventSource(`${basePath}${url}`);
 		eventSourceRef.current = es;
 
 		const handler = (e: MessageEvent) => {
